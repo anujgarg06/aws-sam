@@ -1,0 +1,136 @@
+---
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: An AWS Serverless Application that uses the ASP.NET Core framework running
+  in Amazon Lambda.
+Parameters:
+  ShouldCreateBucket:
+    Type: String
+    AllowedValues:
+    - 'true'
+    - 'false'
+    Description: If true then the S3 bucket that will be proxied will be created with
+      the CloudFormation stack.
+  BucketName:
+    Type: String
+    Description: Name of S3 bucket that will be proxied. If left blank a name will
+      be generated.
+    MinLength: '0'
+  SecurityGroupID:
+    Type: AWS::EC2::SecurityGroup::Id
+    Description: Security Group ID for VPC
+    MinLength: '0'
+  SubnetID1:
+    Type: String
+    Description: Subnet 1
+    MinLength: '0'
+  SubnetID2:
+    Type: String
+    Description: Subnet 2
+    MinLength: '0'
+  APIStageName:
+    Type: String
+    Description: Stage Name
+    MinLength: '0'
+    Default: v1
+  EnvStage:
+    Type: String
+    Description: Env Name like dev,qa,uat, prod
+    MinLength: '0'
+Conditions:
+  CreateS3Bucket:
+    Fn::Equals:
+    - Ref: ShouldCreateBucket
+    - 'true'
+  BucketNameGenerated:
+    Fn::Equals:
+    - Ref: BucketName
+    - ''
+Resources:
+  MyAPI:
+    Type: AWS::Serverless::Api
+    Properties:
+      StageName:
+        Ref: APIStageName
+      MethodSettings:
+      - LoggingLevel: INFO
+        ResourcePath: "/*"
+        HttpMethod: "*"
+      TracingEnabled: true
+      Auth:
+        ResourcePolicy:
+          CustomStatements:
+          - Effect: Allow
+            Principal: "*"
+            Action: execute-api:Invoke
+            Resource: execute-api:/*/*/*
+          - Effect: Deny
+            Principal: "*"
+            Action: execute-api:Invoke
+            Resource: execute-api:/*/*/*
+            Condition:
+              NotIpAddress:
+                aws:SourceIp:
+                - 0.0.0.0
+  AspNetCoreFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName:
+        Fn::Sub: MyApi-${EnvStage}
+      Tracing: Active
+      Handler: AgencyPortal.Api::AgencyPortal.Api.LambdaEntryPoint::FunctionHandlerAsync
+      Runtime: dotnetcore3.1
+      CodeUri: ''
+      MemorySize: 1024
+      Timeout: 30
+      Role: 
+      Policies:
+      - AWSLambdaFullAccess
+      VpcConfig:
+        SecurityGroupIds:
+        - Ref: SecurityGroupID
+        SubnetIds:
+        - Ref: SubnetID1
+        - Ref: SubnetID2
+      Environment:
+        Variables:
+          AppS3Bucket:
+            Fn::If:
+            - CreateS3Bucket
+            - Ref: Bucket
+            - Ref: BucketName
+      Events:
+        ProxyResource:
+          Type: Api
+          Properties:
+            RestApiId:
+              Ref: MyAPI
+            Path: "/{proxy+}"
+            Method: ANY
+        RootResource:
+          Type: Api
+          Properties:
+            RestApiId:
+              Ref: MyAPI
+            Path: "/"
+            Method: ANY
+  Bucket:
+    Type: AWS::S3::Bucket
+    Condition: CreateS3Bucket
+    Properties:
+      BucketName:
+        Fn::If:
+        - BucketNameGenerated
+        - Ref: AWS::NoValue
+        - Fn::Sub: "${BucketName}-${AWS::AccountId}-${EnvStage}"
+Outputs:
+  ApiURL:
+    Description: API endpoint URL for Prod environment
+    Value:
+      Fn::Sub: https://${MyAPI}.execute-api.${AWS::Region}.amazonaws.com/${APIStageName}/
+  S3ProxyBucket:
+    Value:
+      Fn::If:
+      - CreateS3Bucket
+      - Ref: Bucket
+      - Ref: BucketName
